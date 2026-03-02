@@ -1,0 +1,214 @@
+# ============================================================
+#  web_scraper.py
+#  An automated web scraper demonstrating:
+#    > BeautifulSoup for HTML parsing
+#    > Requests for fetching web pages
+#    > Pandas for CSV/JSON data export
+#    > Proxy rotation to avoid IP bans
+#    > Rate limiting to avoid detection
+#    > Random user agents for stealth
+#    > Error handling and retry logic
+#
+#  Usage: python web_scraper.py
+# ============================================================
+
+import requests
+import pandas as pd
+import time
+import random
+import json
+from bs4 import BeautifulSoup
+from datetime import datetime
+
+# ============================================================
+#  CONFIGURATION
+# ============================================================
+CONFIG = {
+    "rate_limit_min": 1.5,   # minimum seconds between requests
+    "rate_limit_max": 3.5,   # maximum seconds between requests
+    "max_retries":    3,      # how many times to retry a failed request
+    "timeout":        10,     # request timeout in seconds
+    "export_csv":     True,   # export data to CSV
+    "export_json":    True,   # export data to JSON
+}
+
+# ============================================================
+#  USER AGENTS
+#  Rotates between different browser user agents so the
+#  scraper doesn't look like a bot to the target website
+# ============================================================
+USER_AGENTS = [
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/119.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/121.0",
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/118.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 Safari/605.1.15",
+]
+
+# ============================================================
+#  PROXY ROTATION
+#  In production, replace these with real proxies
+#  Format: "http://user:pass@ip:port"
+#  For demo purposes we use None (no proxy) but the
+#  rotation logic is fully implemented
+# ============================================================
+PROXIES = [
+    None,  # no proxy (direct connection) — replace with real proxies
+    # "http://proxy1:port",
+    # "http://proxy2:port",
+]
+
+# ============================================================
+#  SCRAPER CLASS
+#  OOP-based scraper with all features built in
+# ============================================================
+class WebScraper:
+    def __init__(self):
+        self.session      = requests.Session()  # reuse connection for efficiency
+        self.results      = []                  # stores all scraped data
+        self.request_count = 0                  # tracks total requests made
+        self.proxy_index  = 0                   # current proxy index
+
+    # ── Get a random user agent ───────────────────────────────
+    def _get_user_agent(self) -> str:
+        return random.choice(USER_AGENTS)
+
+    # ── Get next proxy in rotation ────────────────────────────
+    def _get_proxy(self):
+        proxy = PROXIES[self.proxy_index % len(PROXIES)]
+        self.proxy_index += 1
+        return {"http": proxy, "https": proxy} if proxy else None
+
+    # ── Rate limiting — waits a random amount between requests ─
+    def _rate_limit(self):
+        wait_time = random.uniform(CONFIG["rate_limit_min"], CONFIG["rate_limit_max"])
+        print(f"  [Rate Limit] Waiting {wait_time:.1f}s before next request...")
+        time.sleep(wait_time)
+
+    # ── Fetch a URL with retry logic and error handling ────────
+    def fetch(self, url: str) -> BeautifulSoup | None:
+        headers = {"User-Agent": self._get_user_agent()}
+        proxies = self._get_proxy()
+
+        for attempt in range(1, CONFIG["max_retries"] + 1):
+            try:
+                print(f"  [Fetch] Attempt {attempt}/{CONFIG['max_retries']} → {url}")
+
+                response = self.session.get(
+                    url,
+                    headers  = headers,
+                    proxies  = proxies,
+                    timeout  = CONFIG["timeout"]
+                )
+
+                # Raise an error for bad HTTP status codes (4xx, 5xx)
+                response.raise_for_status()
+
+                self.request_count += 1
+                return BeautifulSoup(response.text, "html.parser")
+
+            except requests.exceptions.HTTPError as e:
+                print(f"  [Error] HTTP error: {e}")
+            except requests.exceptions.ConnectionError:
+                print(f"  [Error] Connection failed — check your internet or proxy")
+            except requests.exceptions.Timeout:
+                print(f"  [Error] Request timed out")
+            except Exception as e:
+                print(f"  [Error] Unexpected error: {e}")
+
+            # Wait before retrying
+            if attempt < CONFIG["max_retries"]:
+                time.sleep(2 * attempt)  # exponential backoff
+
+        print(f"  [Failed] Could not fetch {url} after {CONFIG['max_retries']} attempts")
+        return None
+
+    # ── Scrape quotes from quotes.toscrape.com (safe demo site) ─
+    def scrape_quotes(self, max_pages: int = 3):
+        print("\n[Scraper] Starting quotes scrape...")
+        base_url = "https://quotes.toscrape.com/page/{}/"
+
+        for page in range(1, max_pages + 1):
+            print(f"\n[Page {page}/{max_pages}]")
+            soup = self.fetch(base_url.format(page))
+
+            if not soup:
+                print(f"  [Skip] Could not load page {page}")
+                continue
+
+            # Parse all quote blocks on the page
+            quote_blocks = soup.find_all("div", class_="quote")
+
+            for block in quote_blocks:
+                # Extract quote text, author and tags using BeautifulSoup selectors
+                text   = block.find("span", class_="text").get_text(strip=True)
+                author = block.find("small", class_="author").get_text(strip=True)
+                tags   = [tag.get_text(strip=True) for tag in block.find_all("a", class_="tag")]
+
+                # Store the scraped data as a dictionary
+                self.results.append({
+                    "quote":      text,
+                    "author":     author,
+                    "tags":       ", ".join(tags),
+                    "page":       page,
+                    "scraped_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                })
+
+            print(f"  [Done] Scraped {len(quote_blocks)} quotes from page {page}")
+
+            # Rate limit between pages to avoid overloading the server
+            if page < max_pages:
+                self._rate_limit()
+
+        print(f"\n[Scraper] Finished! Total quotes scraped: {len(self.results)}")
+
+    # ── Export results to CSV ─────────────────────────────────
+    def export_csv(self, filename: str = "scraped_data.csv"):
+        if not self.results:
+            print("[Export] No data to export!")
+            return
+
+        df = pd.DataFrame(self.results)
+        df.to_csv(filename, index=False, encoding="utf-8")
+        print(f"[Export] CSV saved → {filename} ({len(self.results)} rows)")
+
+    # ── Export results to JSON ────────────────────────────────
+    def export_json(self, filename: str = "scraped_data.json"):
+        if not self.results:
+            print("[Export] No data to export!")
+            return
+
+        with open(filename, "w", encoding="utf-8") as f:
+            json.dump(self.results, f, indent=4, ensure_ascii=False)
+
+        print(f"[Export] JSON saved → {filename} ({len(self.results)} records)")
+
+    # ── Print a summary of the scraping session ───────────────
+    def summary(self):
+        print("\n" + "="*50)
+        print("  SCRAPING SESSION SUMMARY")
+        print("="*50)
+        print(f"  Total requests made : {self.request_count}")
+        print(f"  Total records scraped: {len(self.results)}")
+        print(f"  Finished at          : {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        print("="*50)
+
+# ============================================================
+#  MAIN
+# ============================================================
+if __name__ == "__main__":
+    scraper = WebScraper()
+
+    # Scrape quotes from a legal demo website (quotes.toscrape.com)
+    # This site is specifically made for scraping practice
+    scraper.scrape_quotes(max_pages=3)
+
+    # Export the data to CSV and JSON
+    if CONFIG["export_csv"]:
+        scraper.export_csv("scraped_data.csv")
+
+    if CONFIG["export_json"]:
+        scraper.export_json("scraped_data.json")
+
+    # Print session summary
+    scraper.summary()
